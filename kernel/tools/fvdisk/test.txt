@@ -1,0 +1,149 @@
+#路径
+BL := ./BootLoader
+BD := ./Build
+BS := ./Bochsrc
+KL := ./Kernel
+IGE := $(BD)/Image
+TOOLS := ./Tools
+C_INC := $(KL)/Include
+INC_LIB := $(C_INC)/Lib
+
+SYS := $(KL)/Sys
+FIFO := $(KL)/Fifo
+GUI := $(KL)/Gui
+GUI8 := $(GUI)/Gui8
+GUI32 := $(GUI)/Gui32
+BGA := $(GUI)/BGA_driver
+GDT := $(KL)/Gdt
+IDT := $(KL)/Idt
+HD := $(KL)/Hardware
+LIB := $(KL)/Lib
+
+#文件
+BIN :=  $(BD)/boot.bin \
+		$(BD)/loader.bin \
+		$(BD)/Kernel.bin
+
+OBJS := $(BD)/sys_start.o \
+		$(BD)/sys_sse.o \
+		$(BD)/sys_asmfunc.o \
+		$(BD)/sys_main.o \
+		$(BD)/gui8.o \
+		$(BD)/gui32.o
+
+#编译选项
+START_ADDR := 0x10000
+
+CFLAGS := -m32
+CFLAGS += -fno-builtin
+CFLAGS += -nostdinc
+CFLAGS += -fno-pic
+CFLAGS += -fno-pie
+CFLAGS += -nostdlib
+CFLAGS += -fno-stack-protector
+CFLAGS += -g
+CFLAGS += -I$(C_INC)
+CFLAGS += -I$(INC_LIB)
+CFLAGS += -msse3
+CFLAGS += -masm=intel
+
+VHD := $(IGE)/CandleOS-X.vhd
+IMG := $(IGE)/CandleOS-X.img
+
+#工具
+VBOXM := $(TOOLS)/VBoxManage/VBoxManage.exe
+FD := $(TOOLS)/fvdisk/fvdisk.exe
+FDL := $(TOOLS)/fvdisk/fvdisk
+
+make_fd:
+	gcc $(TOOLS)/fvdisk/fvdisk.c -o $(TOOLS)/fvdisk/fvdisk
+
+
+
+#编译引导文件
+$(BD)/%.bin: $(BL)/%.asm
+	nasm -f bin $< -o $@
+
+#编译内核文件
+$(BD)/%.o: $(SYS)/%.asm
+	nasm -f elf32 $< -o $@
+$(BD)/%.o: $(SYS)/%.c
+	gcc $(CFLAGS) -c $^ -o $@
+
+$(BD)/%.o: $(GUI8)/%.asm
+	nasm -f elf32 $< -o $@
+$(BD)/%.o: $(GUI8)/%.c
+	gcc $(CFLAGS) -c $^ -o $@
+
+$(BD)/%.o: $(GUI32)/%.asm
+	nasm -f elf32 $< -o $@
+$(BD)/%.o: $(GUI32)/%.c
+	gcc $(CFLAGS) -c $^ -o $@
+
+#链接内核文件
+$(BD)/Elf_Kernel.bin: $(OBJS)
+	ld -m elf_i386 -static $^ -o $@ -Ttext $(START_ADDR)
+$(BD)/Kernel.bin: $(BD)/Elf_Kernel.bin
+	objcopy --remove-section=.comment --remove-section=.eh_frame $^
+	objcopy -O binary $^ $@
+
+#生成镜像
+make_vhd:
+	$(VBOXM) createhd --filename $(VHD) --size 32 --format VHD --variant Fixed
+
+make_img:
+	$(FD) -i $(IMG) -n 65536
+
+#写入镜像
+write_vhd: $(BIN)
+	$(FD) $(BD)/boot.bin -o $(VHD) -s 0
+	$(FD) $(BD)/loader.bin -o $(VHD) -s 1
+	$(FD) $(BD)/Kernel.bin -o $(VHD) -f 0
+
+write_img: $(BIN)
+	$(FD) $(BD)/boot.bin -o $(IMG) -s 0
+	$(FD) $(BD)/loader.bin -o $(IMG) -s 1
+	$(FD) $(BD)/Kernel.bin -o $(IMG) -f 0
+
+
+
+#清除文件
+clean_vhd:
+	rm -rf $(BD)/*.bin
+	rm -rf $(BD)/*.o
+	$(VBOXM) closemedium disk $(VHD)
+	rm -rf $(IGE)/*.vhd
+	rm -rf $(TOOLS)/fvdisk/fvdisk.exe
+
+clean_img:
+	rm -rf $(BD)/*.bin
+	rm -rf $(BD)/*.o
+	rm -rf $(IGE)/*.img
+	rm -rf $(TOOLS)/fvdisk/fvdisk.exe
+
+clean_lock:
+	rm -rf $(BD)/*.lock
+
+
+
+#整合编译
+cmpe_vhd: clean_vhd make_fd make_vhd write_vhd
+cmpe_img: clean_img make_fd make_img write_img
+
+#QEMU-运行
+rq_vhd: $(VHD)
+	qemu-system-i386 -hda $<
+rq_img: $(IMG)
+	qemu-system-i386 -hda $<
+rqg_img: $(VHD)
+	qemu-system-i386 -hda $< -S -s
+
+#BOCHS-运行
+rb_vhd: $(VHD)
+	bochsdbg -q -f $(BS)/win_vhd_bochsrc.bxrc
+
+#QEMU-整合编译运行
+crq_vhd: cmpe_vhd rq_vhd
+crq_img: cmpe_img rq_img
+#BOCHS-整合编译运行
+crb_vhd: cmpe_vhd rb_vhd
